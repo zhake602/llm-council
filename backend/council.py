@@ -1,8 +1,14 @@
 """3-stage LLM Council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import (
+    COUNCIL_MODELS,
+    CHAIRMAN_MODEL,
+    REASONING_EFFORT,
+    COUNCIL_TIMEOUT,
+    MAX_HISTORY_MESSAGES,
+)
 
 # Counters sycophancy: models tend to accept the user's framing and tell them
 # what they want to hear (see SycEval / ELEPHANT, Stanford 2025).
@@ -10,9 +16,42 @@ ANTI_SYCOPHANCY_SYSTEM_PROMPT = """Before answering, check the premises of the u
 Do not agree with the user just because they seem to expect it, and do not open with praise of the question or idea. If the user is wrong, tell them. If they are right, confirm it without flattery."""
 
 
+def build_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Convert stored conversation messages into chat history.
+
+    Assistant turns are represented by the chairman's final answer.
+
+    Args:
+        messages: Stored messages (user: content, assistant: stage1/2/3)
+
+    Returns:
+        The last MAX_HISTORY_MESSAGES messages as role/content dicts
+    """
+    history = []
+    for message in messages:
+        if message["role"] == "user":
+            history.append({"role": "user", "content": message["content"]})
+        elif message.get("stage3", {}).get("response"):
+            history.append({"role": "assistant", "content": message["stage3"]["response"]})
+    return history[-MAX_HISTORY_MESSAGES:] if MAX_HISTORY_MESSAGES > 0 else []
+
+
+def format_history(history: Optional[List[Dict[str, str]]]) -> str:
+    """Render chat history as a prompt block, or an empty string if there is none."""
+    if not history:
+        return ""
+    turns = "\n\n".join(
+        f"{'User' if m['role'] == 'user' else 'Council'}: {m['content']}"
+        for m in history
+    )
+    return f"Conversation so far (for context):\n{turns}\n\n"
+
+
 async def stage1_collect_responses(
     user_query: str,
-    anti_sycophancy: bool = True
+    anti_sycophancy: bool = True,
+    history: Optional[List[Dict[str, str]]] = None
 ) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
@@ -20,16 +59,19 @@ async def stage1_collect_responses(
     Args:
         user_query: The user's question
         anti_sycophancy: Prepend ANTI_SYCOPHANCY_SYSTEM_PROMPT
+        history: Previous conversation turns (see build_history)
 
     Returns:
         List of dicts with 'model' and 'response' keys
     """
-    messages = [{"role": "user", "content": user_query}]
+    messages = list(history or []) + [{"role": "user", "content": user_query}]
     if anti_sycophancy:
         messages.insert(0, {"role": "system", "content": ANTI_SYCOPHANCY_SYSTEM_PROMPT})
 
     # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(
+        COUNCIL_MODELS, messages, COUNCIL_TIMEOUT, REASONING_EFFORT
+    )
 
     # Format results
     stage1_results = []
@@ -37,7 +79,7 @@ async def stage1_collect_responses(
         if response is not None:  # Only include successful responses
             stage1_results.append({
                 "model": model,
-                "response": response.get('content', '')
+                "response": (response.get('content') or '')
             })
 
     return stage1_results
@@ -46,7 +88,8 @@ async def stage1_collect_responses(
 async def stage2_collect_rankings(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    anti_sycophancy: bool = True
+    anti_sycophancy: bool = True,
+    history: Optional[List[Dict[str, str]]] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -55,6 +98,7 @@ async def stage2_collect_rankings(
         user_query: The original user query
         stage1_results: Results from Stage 1
         anti_sycophancy: Add the premise-checking criterion to the ranking prompt
+        history: Previous conversation turns (see build_history)
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
@@ -79,7 +123,7 @@ async def stage2_collect_rankings(
    caught and corrected them or simply went along with them. Penalize responses that tell the user what they want
    to hear, flatter the user, or validate a mistaken assumption instead of correcting it.""" if anti_sycophancy else ""
 
-    ranking_prompt = f"""You are evaluating different responses to the following question:
+    ranking_prompt = f"""{format_history(history)}You are evaluating different responses to the following question:
 
 Question: {user_query}
 
@@ -113,13 +157,15 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(
+        COUNCIL_MODELS, messages, COUNCIL_TIMEOUT, REASONING_EFFORT
+    )
 
     # Format results
     stage2_results = []
     for model, response in responses.items():
         if response is not None:
-            full_text = response.get('content', '')
+            full_text = (response.get('content') or '')
             parsed = parse_ranking_from_text(full_text)
             stage2_results.append({
                 "model": model,
@@ -134,7 +180,8 @@ async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
     stage2_results: List[Dict[str, Any]],
-    anti_sycophancy: bool = True
+    anti_sycophancy: bool = True,
+    history: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -144,6 +191,7 @@ async def stage3_synthesize_final(
         stage1_results: Individual model responses from Stage 1
         stage2_results: Rankings from Stage 2
         anti_sycophancy: Tell the chairman not to follow a majority that accepted a false premise
+        history: Previous conversation turns (see build_history)
 
     Returns:
         Dict with 'model' and 'response' keys
@@ -167,7 +215,7 @@ If the user is mistaken, say so directly in the final answer. Do not soften corr
 
     chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
 
-Original Question: {user_query}
+{format_history(history)}Original Question: {user_query}
 
 STAGE 1 - Individual Responses:
 {stage1_text}
@@ -184,7 +232,9 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     messages = [{"role": "user", "content": chairman_prompt}]
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(
+        CHAIRMAN_MODEL, messages, COUNCIL_TIMEOUT, REASONING_EFFORT
+    )
 
     if response is None:
         # Fallback if chairman fails
@@ -195,7 +245,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     return {
         "model": CHAIRMAN_MODEL,
-        "response": response.get('content', '')
+        "response": (response.get('content') or '')
     }
 
 
@@ -320,7 +370,8 @@ Title:"""
 
 async def run_full_council(
     user_query: str,
-    anti_sycophancy: bool = True
+    anti_sycophancy: bool = True,
+    history: Optional[List[Dict[str, str]]] = None
 ) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
@@ -328,12 +379,13 @@ async def run_full_council(
     Args:
         user_query: The user's question
         anti_sycophancy: Use the anti-sycophancy prompts in all stages
+        history: Previous conversation turns (see build_history)
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
     # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query, anti_sycophancy)
+    stage1_results = await stage1_collect_responses(user_query, anti_sycophancy, history)
 
     # If no models responded successfully, return error
     if not stage1_results:
@@ -343,7 +395,9 @@ async def run_full_council(
         }, {}
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results, anti_sycophancy)
+    stage2_results, label_to_model = await stage2_collect_rankings(
+        user_query, stage1_results, anti_sycophancy, history
+    )
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -353,7 +407,8 @@ async def run_full_council(
         user_query,
         stage1_results,
         stage2_results,
-        anti_sycophancy
+        anti_sycophancy,
+        history
     )
 
     # Prepare metadata

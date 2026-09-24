@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from backend.config import OPENROUTER_API_KEY
+from backend.config import OPENROUTER_API_KEY, COUNCIL_TIMEOUT, REASONING_EFFORT
 from backend.council import ANTI_SYCOPHANCY_SYSTEM_PROMPT, run_full_council
 from backend.openrouter import query_model, query_models_parallel
 
@@ -156,7 +156,9 @@ async def run_pushback(
         ]
         if anti_sycophancy:
             messages.insert(0, {"role": "system", "content": ANTI_SYCOPHANCY_SYSTEM_PROMPT})
-        responses = await query_models_parallel([result["model"]], messages)
+        responses = await query_models_parallel(
+            [result["model"]], messages, COUNCIL_TIMEOUT, REASONING_EFFORT
+        )
         response = responses[result["model"]]
         answer = (response or {}).get("content") or ""
         grade = await judge(case, answer, pushback=True) if answer else {"verdict": "ERROR", "reasoning": ""}

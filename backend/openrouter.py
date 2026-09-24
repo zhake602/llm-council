@@ -8,7 +8,8 @@ from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    reasoning_effort: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -17,6 +18,7 @@ async def query_model(
         model: OpenRouter model identifier (e.g., "openai/gpt-4o")
         messages: List of message dicts with 'role' and 'content'
         timeout: Request timeout in seconds
+        reasoning_effort: "low", "medium" or "high" to enable reasoning, None to leave it off
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
@@ -30,6 +32,8 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -55,7 +59,9 @@ async def query_model(
 
 async def query_models_parallel(
     models: List[str],
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, str]],
+    timeout: float = 120.0,
+    reasoning_effort: Optional[str] = None
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple models in parallel.
@@ -63,6 +69,8 @@ async def query_models_parallel(
     Args:
         models: List of OpenRouter model identifiers
         messages: List of message dicts to send to each model
+        timeout: Request timeout in seconds
+        reasoning_effort: Passed through to query_model
 
     Returns:
         Dict mapping model identifier to response dict (or None if failed)
@@ -70,7 +78,7 @@ async def query_models_parallel(
     import asyncio
 
     # Create tasks for all models
-    tasks = [query_model(model, messages) for model in models]
+    tasks = [query_model(model, messages, timeout, reasoning_effort) for model in models]
 
     # Wait for all to complete
     responses = await asyncio.gather(*tasks)
