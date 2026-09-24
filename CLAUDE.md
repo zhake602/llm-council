@@ -11,8 +11,9 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 ### Backend Structure (`backend/`)
 
 **`config.py`**
-- Contains `COUNCIL_MODELS` (list of OpenRouter model identifiers)
-- Contains `CHAIRMAN_MODEL` (model that synthesizes final answer)
+- Contains `COUNCIL_MODELS` (list of OpenRouter model identifiers), overridable via `COUNCIL_MODELS` env var (comma-separated)
+- Contains `CHAIRMAN_MODEL` (model that synthesizes final answer), overridable via env
+- `REASONING_EFFORT` (default "high", "none" disables), `COUNCIL_TIMEOUT` (default 300s), `MAX_HISTORY_MESSAGES` (default 10)
 - Uses environment variable `OPENROUTER_API_KEY` from `.env`
 - Backend runs on **port 8001** (NOT 8000 - user had another app on 8000)
 
@@ -20,9 +21,12 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - `query_model()`: Single async model query
 - `query_models_parallel()`: Parallel queries using `asyncio.gather()`
 - Returns dict with 'content' and optional 'reasoning_details'
+- `reasoning_effort` adds OpenRouter's `reasoning: {effort}` param; council and chairman calls use it, title generation does not
 - Graceful degradation: returns None on failure, continues with successful responses
 
 **`council.py`** - The Core Logic
+- `build_history()`: Converts stored messages to chat history (assistant turns = chairman's final answer), last `MAX_HISTORY_MESSAGES`
+- All stages take `history`: Stage 1 gets it as real chat turns, Stages 2 and 3 as a "Conversation so far" block in the prompt
 - `stage1_collect_responses()`: Parallel queries to all council models
 - `stage2_collect_rankings()`:
   - Anonymizes responses as "Response A, B, C, etc."
@@ -33,6 +37,10 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - `stage3_synthesize_final()`: Chairman synthesizes from all responses + rankings
 - `parse_ranking_from_text()`: Extracts "FINAL RANKING:" section, handles both numbered lists and plain format
 - `calculate_aggregate_rankings()`: Computes average rank position across all peer evaluations
+
+**`check_models.py`**
+- `uv run python -m backend.check_models` verifies configured ids against the public OpenRouter catalog (no key needed) and lists each provider's newest models
+- Matters because a wrong id fails silently (graceful degradation drops the model)
 
 **`storage.py`**
 - JSON-based conversation storage in `data/conversations/`
@@ -91,6 +99,15 @@ The Stage 2 prompt is very specific to ensure parseable output:
 
 This strict format allows reliable parsing while still getting thoughtful evaluations.
 
+### Anti-Sycophancy Prompting
+Anonymized peer review prevents models from favoring each other, but not from all agreeing with a false premise in the user's question. Each stage counters this:
+- Stage 1: `ANTI_SYCOPHANCY_SYSTEM_PROMPT` (system message) tells models to check premises and not flatter or simply agree
+- Stage 2: ranking prompt penalizes responses that go along with false premises or tell the user what they want to hear
+- Stage 3: chairman must not adopt a premise just because most responses did, and must state corrections directly
+- All stage functions and `run_full_council()` take `anti_sycophancy: bool = True`; `False` reproduces the original prompts exactly
+
+`evals/sycophancy_eval.py` compares both variants: `uv run python -m evals.sycophancy_eval [--limit N] [--only ID ...] [--skip-pushback]`. It runs the full council on questions with false premises (plus a true-premise control), a pushback test (each model gets its own Stage 1 answer and a confident objection), and grades answers with a judge model. Output: `data/sycophancy_eval/<timestamp>/report.md` and `results.json`. About 22 API calls per question per variant (14 with `--skip-pushback`).
+
 ### De-anonymization Strategy
 - Models receive: "Response A", "Response B", etc.
 - Backend creates mapping: `{"Response A": "openai/gpt-5.1", ...}`
@@ -131,6 +148,7 @@ Models are hardcoded in `backend/config.py`. Chairman can be same or different f
 2. **CORS Issues**: Frontend must match allowed origins in `main.py` CORS middleware
 3. **Ranking Parse Failures**: If models don't follow format, fallback regex extracts any "Response X" patterns in order
 4. **Missing Metadata**: Metadata is ephemeral (not persisted), only available in API responses
+5. **Silently Missing Model**: A wrong or retired model id just drops that model from the council; run `backend.check_models`
 
 ## Future Enhancement Ideas
 

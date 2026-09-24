@@ -44,17 +44,20 @@ Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purcha
 
 ### 3. Configure Models (Optional)
 
-Edit `backend/config.py` to customize the council:
+Defaults live in `backend/config.py`. Override them in `.env` without editing code:
 
-```python
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-]
+```bash
+COUNCIL_MODELS=openai/gpt-5.1,google/gemini-3-pro-preview,anthropic/claude-sonnet-4.5,x-ai/grok-4
+CHAIRMAN_MODEL=google/gemini-3-pro-preview
+REASONING_EFFORT=high        # low / medium / high / none
+COUNCIL_TIMEOUT=300          # seconds per model call
+MAX_HISTORY_MESSAGES=10      # previous messages the council sees
+```
 
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+A wrong model id does not raise an error: that model is silently left out. Check your ids against the OpenRouter catalog, and see the newest models from each provider:
+
+```bash
+uv run python -m backend.check_models
 ```
 
 ## Running the Application
