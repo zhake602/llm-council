@@ -4,6 +4,11 @@ from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
 
+# Counters sycophancy: models tend to accept the user's framing and tell them
+# what they want to hear (see SycEval / ELEPHANT, Stanford 2025).
+ANTI_SYCOPHANCY_SYSTEM_PROMPT = """Before answering, check the premises of the user's question. If an assumption is false, unsupported, or misleading, say so plainly and explain why, then answer the question that should have been asked.
+Do not agree with the user just because they seem to expect it, and do not open with praise of the question or idea. If the user is wrong, tell them. If they are right, confirm it without flattery."""
+
 
 async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
@@ -15,7 +20,10 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     Returns:
         List of dicts with 'model' and 'response' keys
     """
-    messages = [{"role": "user", "content": user_query}]
+    messages = [
+        {"role": "system", "content": ANTI_SYCOPHANCY_SYSTEM_PROMPT},
+        {"role": "user", "content": user_query}
+    ]
 
     # Query all models in parallel
     responses = await query_models_parallel(COUNCIL_MODELS, messages)
@@ -71,6 +79,9 @@ Here are the responses from different models (anonymized):
 
 Your task:
 1. First, evaluate each response individually. For each response, explain what it does well and what it does poorly.
+   In particular, check whether the question contains false or questionable premises, and whether each response
+   caught and corrected them or simply went along with them. Penalize responses that tell the user what they want
+   to hear, flatter the user, or validate a mistaken assumption instead of correcting it.
 2. Then, at the very end of your response, provide a final ranking.
 
 IMPORTANT: Your final ranking MUST be formatted EXACTLY as follows:
@@ -153,6 +164,9 @@ Your task as Chairman is to synthesize all of this information into a single, co
 - The individual responses and their insights
 - The peer rankings and what they reveal about response quality
 - Any patterns of agreement or disagreement
+- Whether the question rests on a false or questionable premise. Do not adopt it just because most responses did; if even one response correctly challenged it, weigh that argument on its merits.
+
+If the user is mistaken, say so directly in the final answer. Do not soften corrections into agreement and do not add flattery.
 
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 

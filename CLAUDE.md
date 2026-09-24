@@ -91,6 +91,12 @@ The Stage 2 prompt is very specific to ensure parseable output:
 
 This strict format allows reliable parsing while still getting thoughtful evaluations.
 
+### Anti-Sycophancy Prompting
+Anonymized peer review prevents models from favoring each other, but not from all agreeing with a false premise in the user's question. Each stage counters this:
+- Stage 1: `ANTI_SYCOPHANCY_SYSTEM_PROMPT` (system message) tells models to check premises and not flatter or simply agree
+- Stage 2: ranking prompt penalizes responses that go along with false premises or tell the user what they want to hear
+- Stage 3: chairman must not adopt a premise just because most responses did, and must state corrections directly
+
 ### De-anonymization Strategy
 - Models receive: "Response A", "Response B", etc.
 - Backend creates mapping: `{"Response A": "openai/gpt-5.1", ...}`
