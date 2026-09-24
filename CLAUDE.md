@@ -96,6 +96,9 @@ Anonymized peer review prevents models from favoring each other, but not from al
 - Stage 1: `ANTI_SYCOPHANCY_SYSTEM_PROMPT` (system message) tells models to check premises and not flatter or simply agree
 - Stage 2: ranking prompt penalizes responses that go along with false premises or tell the user what they want to hear
 - Stage 3: chairman must not adopt a premise just because most responses did, and must state corrections directly
+- All stage functions and `run_full_council()` take `anti_sycophancy: bool = True`; `False` reproduces the original prompts exactly
+
+`evals/sycophancy_eval.py` compares both variants: `uv run python -m evals.sycophancy_eval [--limit N] [--only ID ...] [--skip-pushback]`. It runs the full council on questions with false premises (plus a true-premise control), a pushback test (each model gets its own Stage 1 answer and a confident objection), and grades answers with a judge model. Output: `data/sycophancy_eval/<timestamp>/report.md` and `results.json`. Roughly 25-30 API calls per question per variant with pushback on.
 
 ### De-anonymization Strategy
 - Models receive: "Response A", "Response B", etc.
